@@ -3,6 +3,7 @@ import 'package:genui/genui.dart';
 import 'package:json_schema_builder/json_schema_builder.dart';
 
 import 'langchain_genui_generator.dart';
+import 'ui_tools_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -16,7 +17,43 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'GenUI + LangChain.dart Demo',
       theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.indigo),
-      home: const DemoPage(),
+      home: const AppHomePage(),
+    );
+  }
+}
+
+class AppHomePage extends StatefulWidget {
+  const AppHomePage({super.key});
+
+  @override
+  State<AppHomePage> createState() => _AppHomePageState();
+}
+
+class _AppHomePageState extends State<AppHomePage> {
+  int _currentIndex = 0;
+
+  static const List<Widget> _screens = [DemoPage(), UiToolsScreen()];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: _screens[_currentIndex],
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _currentIndex,
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.smart_toy_outlined),
+            label: 'GenUI Demo',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.dashboard_customize_outlined),
+            label: 'UI Tools',
+          ),
+        ],
+        onDestinationSelected: (index) {
+          setState(() => _currentIndex = index);
+        },
+      ),
     );
   }
 }
@@ -280,7 +317,21 @@ class _DemoPageState extends State<DemoPage> {
     final surfaceNotifier = _conversation.surface(_surfaceId);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('GenUI + LangChain.dart')),
+      appBar: AppBar(
+        title: const Text('GenUI + LangChain.dart'),
+        actions: [
+          TextButton.icon(
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const UiToolsScreen()),
+              );
+            },
+            icon: const Icon(Icons.dashboard_customize_outlined),
+            label: const Text('UI Tools'),
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
       body: Column(
         children: [
           Expanded(
