@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:genui/genui.dart';
 import 'package:json_schema_builder/json_schema_builder.dart';
 
-import '../langchain_genui_generator.dart';
+import 'package:design_ai/genui/langchain_genui_content_generator.dart';
 
 class DemoPage extends StatefulWidget {
   const DemoPage({super.key});
