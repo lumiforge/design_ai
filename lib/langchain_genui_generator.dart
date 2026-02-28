@@ -10,9 +10,17 @@ import 'package:langchain_openai/langchain_openai.dart' as lco;
 import 'openai_config.dart';
 
 class LangChainGenUiContentGenerator implements ContentGenerator {
-  LangChainGenUiContentGenerator({required this.catalogId});
+  LangChainGenUiContentGenerator({
+    required this.catalogId,
+    this.surfaceId,
+    this.catalogs = const <Catalog>[],
+    this.systemPrompt,
+  });
 
   final String catalogId;
+  final String? surfaceId;
+  final List<Catalog> catalogs;
+  final String? systemPrompt;
 
   final _a2uiController = StreamController<A2uiMessage>.broadcast();
   final _textController = StreamController<String>.broadcast();
@@ -20,6 +28,7 @@ class LangChainGenUiContentGenerator implements ContentGenerator {
   final _isProcessing = ValueNotifier<bool>(false);
 
   bool _started = false;
+  String? _currentSurfaceId;
 
   @override
   Stream<A2uiMessage> get a2uiMessageStream => _a2uiController.stream;
@@ -32,6 +41,86 @@ class LangChainGenUiContentGenerator implements ContentGenerator {
 
   @override
   ValueListenable<bool> get isProcessing => _isProcessing;
+
+  Catalog? _getCatalog() {
+    try {
+      return catalogs.isNotEmpty ? catalogs.first : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _buildDefaultPrompt(String userText) {
+    final catalog = _getCatalog();
+    if (catalog == null) {
+      return '''
+        You are a UI layout generator for a marketplace product card builder.
+        You MUST generate only valid JSON.
+        You MUST use ONLY the allowed component types.
+        You MUST NOT invent new component names.
+        You MUST NOT use absolute positioning.
+        You MUST select layoutVariant instead of coordinates.
+
+        Allowed components:
+        - MarketplaceCanvas
+        - BackgroundLayer
+        - ProductImageLayer
+        - TitleText
+        - SubtitleText
+        - FeatureBullets
+        - BadgePill
+        - PriceBlock
+        - CTASticker
+        - CompositionGrid
+
+        Available layoutVariant values:
+        v1, v2, v3, v4, v5, v6
+
+        Text limits:
+        - title: max 70 chars
+        - subtitle: max 90 chars
+        - bullet: max 40 chars
+        - badge: max 20 chars
+
+        If strictMode = true:
+        - Avoid marketing exaggerations
+        - Avoid words like: лучший, №1, супер, гарантия 100%, акция сегодня
+        - Keep text neutral and informative
+
+        Output format:
+        {
+          "preset": "wb_main | ozon_main",
+          "layoutVariant": "vX",
+          "tokens": {
+            "accentColor": "#RRGGBB",
+            "backgroundType": "solid | gradient"
+          },
+          "layers": []
+        }
+      ''';
+    }
+
+    final widgetNames = catalog.items.map((item) => item.name).toList();
+    final widgetsStr = widgetNames.map((w) => '"$w"').join(' | ');
+
+    return '''
+          
+        Ты генерируешь UI для Flutter GenUI. Верни СТРОГО валидный JSON (без markdown, без пояснений).
+
+        Доступные виджеты: $widgetsStr
+
+        Формат:
+        {
+          "widget": $widgetsStr,
+          "props": { ... }
+        }
+
+        Выбери подходящий виджет на основе запроса пользователя и заполни props согласно схеме виджета.
+
+        Запрос пользователя:
+        $userText
+    ''';
+  }
 
   @override
   Future<void> sendRequest(
@@ -71,79 +160,21 @@ class LangChainGenUiContentGenerator implements ContentGenerator {
         baseUrl: Openai.baseUrl,
         defaultOptions: const lco.ChatOpenAIOptions(
           model: 'gpt-4o-mini',
-          temperature: 0.2,
+          temperature: 0.7,
         ),
       );
 
-      // TOOL: сложение a+b
-      final addTool =
-          lc.Tool.fromFunction<Map<String, Object?>, Map<String, Object?>>(
-            name: 'add',
-            description: '''
-                  Складывает два числа.
-                  Используй, когда пользователь просит посчитать сумму.
-                  Вход: { "a": number, "b": number }
-                  Выход: { "result": number }
-            ''',
-            inputJsonSchema: const <String, Object?>{
-              'type': 'object',
-              'properties': <String, Object?>{
-                'a': <String, Object?>{'type': 'number'},
-                'b': <String, Object?>{'type': 'number'},
-              },
-              'required': <String>['a', 'b'],
-              'additionalProperties': false,
-            },
-            getInputFromJson: (json) {
-              final a = json['a'];
-              final b = json['b'];
-              debugPrint('a=$a, b=$b');
-              if (a is num && b is num) {
-                return <String, Object?>{'a': a, 'b': b};
-              }
-              throw lc.ToolException(
-                message: 'Некорректные аргументы: ожидаются числа a и b.',
-              );
-            },
-            func: (input) {
-              final a = input['a'] as num;
-              final b = input['b'] as num;
-              return <String, Object?>{'result': a + b, 'a': a, 'b': b};
-            },
-          );
+      // Используем системный промпт или строим по умолчанию
+      final instruction = systemPrompt ?? _buildDefaultPrompt(userText);
 
-      // Агент
-      final agent = lc.ToolsAgent.fromLLMAndTools(llm: llm, tools: [addTool]);
-      final executor = lc.AgentExecutor(agent: agent);
+      debugPrint('=== PROMPT ===\n$instruction\n============');
 
-      // ВАЖНО: заставляем модель выбирать widget из фиксированного набора
-      final String instruction =
-          '''
-Ты генерируешь UI для Flutter GenUI. Верни СТРОГО валидный JSON (без markdown, без пояснений).
+      final response = await llm.call([lc.ChatMessage.humanText(instruction)]);
 
-Формат:
-{
-  "widget": "MessageCard" | "BulletsCard" | "StatusBadgeCard" | "MathResultCard",
-  "props": { ... }
-}
+      final responseText = response.content.toString().trim();
+      debugPrint('=== RESPONSE ===\n$responseText\n============');
 
-Правила выбора:
-- Если запрос про сложение/сумму/арифметику: используй инструмент add и верни widget="MathResultCard" с props:
-  { "a": number, "b": number, "result": number, "title": string }
-- Если пользователь просит план/список/шаги/пункты: widget="BulletsCard" props:
-  { "title": string, "items": [string, ...] }
-- Если пользователь пишет про статус (ok/ошибка/предупреждение) или просит показать статус: widget="StatusBadgeCard" props:
-  { "label": string, "status": "ok" | "warning" | "error", "details": string }
-- Иначе: widget="MessageCard" props:
-  { "title": string, "body": string }
-
-Теперь обработай запрос пользователя:
-$userText
-''';
-
-      final String agentText = (await executor.run(instruction)).trim();
-
-      final Map<String, Object?> ui = _safeParseJson(agentText);
+      final Map<String, Object?> ui = _safeParseJson(responseText);
 
       final widget = (ui['widget'] ?? 'MessageCard').toString();
       final Object rawProps = ui['props'] ?? const <String, Object?>{};
@@ -151,24 +182,25 @@ $userText
           ? rawProps.map((k, v) => MapEntry(k.toString(), v))
           : <String, Object?>{};
 
-      const surfaceId = 'main';
+      _currentSurfaceId ??=
+          surfaceId ?? 'main-${DateTime.now().millisecondsSinceEpoch}';
+      final currentSurfaceId = _currentSurfaceId!;
       const rootId = 'root';
 
       if (!_started) {
         _started = true;
         _a2uiController.add(
           BeginRendering(
-            surfaceId: surfaceId,
+            surfaceId: currentSurfaceId,
             root: rootId,
             catalogId: catalogId,
           ),
         );
       }
 
-      // В GenUI CatalogItem выбирается по ключу: componentProperties[<CatalogItem.name>] = props
       _a2uiController.add(
         SurfaceUpdate(
-          surfaceId: surfaceId,
+          surfaceId: currentSurfaceId,
           components: <Component>[
             Component(
               id: rootId,
@@ -179,18 +211,9 @@ $userText
       );
 
       // Текстовый фолбэк
-      final textFallback = switch (widget) {
-        'BulletsCard' =>
-          '${props['title'] ?? 'Список'}\n- ${(props['items'] as List?)?.join('\n- ') ?? ''}',
-        'StatusBadgeCard' =>
-          'Статус: ${props['status'] ?? ''}\n${props['label'] ?? ''}\n${props['details'] ?? ''}',
-        'MathResultCard' =>
-          '${props['title'] ?? 'Результат'}\n${props['a']} + ${props['b']} = ${props['result']}',
-        _ => '${props['title'] ?? 'Ответ'}\n\n${props['body'] ?? ''}',
-      };
-
-      _textController.add(textFallback);
+      _textController.add('✅ Создан виджет: $widget');
     } catch (e, st) {
+      debugPrint('❌ ОШИБКА: $e\n$st');
       _errorController.add(ContentGeneratorError('Ошибка генерации: $e', st));
     } finally {
       _isProcessing.value = false;
@@ -221,19 +244,25 @@ $userText
 
   Map<String, Object?> _safeParseJson(String raw) {
     try {
+      // Пытаемся найти JSON в ответе
+      final jsonMatch = RegExp(r'\{[\s\S]*\}').firstMatch(raw);
+      if (jsonMatch != null) {
+        final jsonStr = jsonMatch.group(0)!;
+        final decoded = jsonDecode(jsonStr);
+        if (decoded is Map) {
+          return decoded.map((k, v) => MapEntry(k.toString(), v));
+        }
+      }
+
       final decoded = jsonDecode(raw);
       if (decoded is Map) {
         return decoded.map((k, v) => MapEntry(k.toString(), v));
       }
-      return <String, Object?>{
-        'widget': 'MessageCard',
-        'props': <String, Object?>{'title': 'Ответ', 'body': raw},
-      };
-    } catch (_) {
-      return <String, Object?>{
-        'widget': 'MessageCard',
-        'props': <String, Object?>{'title': 'Ответ', 'body': raw},
-      };
+
+      return <String, Object?>{};
+    } catch (e) {
+      debugPrint('JSON parse error: $e, raw=$raw');
+      return <String, Object?>{};
     }
   }
 }
